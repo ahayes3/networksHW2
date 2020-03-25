@@ -1,51 +1,63 @@
-import java.net.{InetSocketAddress, SocketAddress}
+import java.net.{Inet4Address, InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
-import java.nio.channels.{DatagramChannel, SelectionKey, Selector, SocketChannel}
+import java.nio.channels.DatagramChannel
 import java.util
 
 import scala.collection.mutable
-import scala.io.StdIn
 import scala.util.Random
-
-//Start with only port arguement if waiting for connection
 
 object TftpClient {
 	
-	import State._
-	
 	def main(args: Array[String]): Unit = {
-		var port: Int = -1
-		var serverAddress = ""
-		var serverPort = -1
-		if (args.isEmpty) {
-			println("What port will this run on?")
-			port = StdIn.readInt()
-		}
-		else {
-			port = args(0).toInt
-			serverAddress = args(1)
-			serverPort = args(2).toInt
-		}
-		val selector = Selector.open()
+		
+		val port = args(0).toInt
+		val serverAddress = args(1)
+		val serverPort = args(2).toInt
+		val v6 = if(args.contains("-v6")) true else false
+		val drop = if(args.contains("-drop")) true else false
+		
+		
 		val socket = DatagramChannel.open()
-		socket.register(selector, SelectionKey.OP_READ)
 		socket.bind(new InetSocketAddress(port))
 		socket.configureBlocking(false)
 		
-		while(true) {
-			
-			selector.select
-			val selected = selector.selectedKeys.iterator()
-			while(selected.hasNext) {
-				val i = selected.next
-				if(i.isReadable)
-					acceptConnection(socket)
-			}
-			
-		}
+		
+		socket.connect(new InetSocketAddress(serverAddress,serverPort))
+		if(socket.isConnected)
+			keyExchange(socket)
+		else
+			println("ERROR WITH CONNECTION")
+		
 		
 	}
-	def acceptConnection(socket:DatagramChannel): Unit = {
+	def keyExchange(socket:DatagramChannel):Long = {
+		val buff = ByteBuffer.allocate(4)
+		val key1 = Random.nextInt
+		buff.putInt(key1)
+		socket.write(buff)
+		buff.clear
+		var received = false
+		while(!received) {
+			val time = System.currentTimeMillis
+			while(buff.position < buff.limit && System.currentTimeMillis - time < 500) {
+				socket.read(buff)
+			}
+			if(buff.position == buff.limit)
+				received = true
+			else {
+				buff.clear
+				buff.putInt(123) //123 indicates the key wasn't received
+				socket.write(buff)
+				buff.clear
+			}
+		}
+		val longKey = key1.toLong<<32 + buff.getInt
+		longKey
+	}
+	def createConnection(socket:DatagramChannel): Unit = {
+	
+	}
+	/*def acceptConnection(socket:DatagramChannel): Unit = {
 		val requestBuff = ByteBuffer.allocate(512)
 		var host:SocketAddress = null
 		
@@ -62,7 +74,6 @@ object TftpClient {
 		
 		val opcode = requestBuff.getInt
 		val filename = getString(requestBuff)
-		val mode = getString(requestBuff)
 		
 		val options = mutable.HashMap[String,String]()
 		while(requestBuff.position < requestBuff.limit) {
@@ -77,7 +88,7 @@ object TftpClient {
 			send(socket)
 		else if(opcode == 2)
 			receive(socket)
-	}
+	}*/
 	def send(socket:DatagramChannel): Unit = {
 	
 	}
@@ -116,21 +127,17 @@ object TftpClient {
 		buff.putShort(blockNum)
 		buff
 	}
-	def readReq(filename:String,mode:String): ByteBuffer = {
-		val buff = ByteBuffer.allocate(4+filename.length+mode.length)
+	def readReq(filename:String): ByteBuffer = {
+		val buff = ByteBuffer.allocate(4+filename.length)
 		buff.putShort(1.toShort)
 		buff.put(filename.getBytes)
 		buff.put(0.toByte)
-		buff.put(mode.getBytes)
-		buff.put(0.toByte)
 		buff
 	}
-	def writeReq(filename:String,mode:String): ByteBuffer = {
-		val buff = ByteBuffer.allocate(4+filename.length+mode.length)
-		buff.putShort(2.toShort)
+	def writeReq(filename:String): ByteBuffer = {
+		val buff = ByteBuffer.allocate(4+filename.length)
+		buff.putShort(1.toShort)
 		buff.put(filename.getBytes)
-		buff.put(0.toByte)
-		buff.put(mode.getBytes)
 		buff.put(0.toByte)
 		buff
 	}

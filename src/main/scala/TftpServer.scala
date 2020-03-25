@@ -1,13 +1,32 @@
-import java.net.SocketAddress
+import java.net.{InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
+import java.nio.channels.{DatagramChannel, SelectionKey, Selector}
 
 import scala.collection.mutable
+import scala.util.Random
 
 object TftpServer {
 	
 	def main(args:Array[String]): Unit = {
-	
+		val socket = DatagramChannel.open
+		socket.bind(new InetSocketAddress(args(0).toInt))
+		val selector = Selector.open
+		socket.register(selector,SelectionKey.OP_CONNECT)
+		var key = -1L
+		while(true) {
+			selector.select
+			val keys = selector.selectedKeys
+			val iter=keys.iterator
+			while(iter.hasNext) {
+				val k = iter.next
+				if(k.isConnectable) {
+					key = keyExchange(socket)
+				}
+			}
+		}
+		
+		
+		
 	}
 	def send(socket:DatagramChannel): Unit = {
 	
@@ -25,6 +44,31 @@ object TftpServer {
 			
 		}while(a != '\0')
 		str
+	}
+	def keyExchange(socket:DatagramChannel):Long = {
+		val buff = ByteBuffer.allocate(4)
+		var received = false
+		while(!received) {
+			val time = System.currentTimeMillis
+			while(buff.position < buff.limit && System.currentTimeMillis - time < 500) {
+				socket.read(buff)
+			}
+			if(buff.position == buff.limit)
+				received = true
+			else {
+				buff.clear
+				buff.putInt(123) //123 indicates the key wasn't received
+				socket.write(buff)
+				buff.clear
+			}
+		}
+		val key1 = buff.getInt
+		val key2 = Random.nextInt
+		buff.clear
+		buff.putInt(key2)
+		socket.write(buff)
+		val longKey = (key1.toLong << 32) + key2
+		longKey
 	}
 	def acceptConnection(socket:DatagramChannel): Unit = {
 		val requestBuff = ByteBuffer.allocate(512)
