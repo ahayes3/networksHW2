@@ -28,10 +28,10 @@ object TftpServer {
 		
 		
 	}
-	def send(socket:DatagramChannel): Unit = {
+	def rreq(socket:DatagramChannel,key:Long): Unit = {
 	
 	}
-	def receive(socket:DatagramChannel): Unit = {
+	def wreq(socket:DatagramChannel,key:Long): Unit = {
 	
 	}
 	def getString(buff:ByteBuffer):String = {
@@ -70,20 +70,27 @@ object TftpServer {
 		val longKey = (key1.toLong << 32) + key2
 		longKey
 	}
-	def acceptConnection(socket:DatagramChannel): Unit = {
-		val requestBuff = ByteBuffer.allocate(512)
+	def acceptConnection(socket:DatagramChannel,key:Long): Unit = {
+		var requestBuff = ByteBuffer.allocate(512)
 		var host:SocketAddress = null
 		
-		val sTime = System.currentTimeMillis
-		while(requestBuff.position < requestBuff.limit && System.currentTimeMillis - sTime <1000) {
-			if(host == null) {
-				host = socket.receive(requestBuff)
-				socket.connect(host)
+		var receiving = true
+		while (receiving) {
+			requestBuff.clear
+			val sTime = System.currentTimeMillis
+			while (requestBuff.position < requestBuff.limit && System.currentTimeMillis - sTime < 1000) {
+				if (host == null) {
+					host = socket.receive(requestBuff)
+					socket.connect(host)
+				}
+				else {
+					socket.read(requestBuff)
+				}
 			}
-			else {
-				socket.read(requestBuff)
-			}
+			if(requestBuff.getChar(requestBuff.position-1)=='\0')
+				receiving = false
 		}
+		requestBuff = keyXor(key,requestBuff)
 		
 		val opcode = requestBuff.getInt
 		val filename = getString(requestBuff)
@@ -93,15 +100,17 @@ object TftpServer {
 		while(requestBuff.position < requestBuff.limit) {
 			options.put(getString(requestBuff).toLowerCase,getString(requestBuff).toLowerCase)
 		}
+		val returnBuff = keyXor(key,oack(options))
+		socket.write(returnBuff)
 		
 		val blksize = if (options.contains("blksize") && options("blksize").toInt < 65536 && options("blksize").toInt >0) options("blksize").toInt else 512
 		val timeout = if (options.contains("timeout") && options("timeout").toInt<=255 && options("timeout").toInt>0) options("timeout").toInt else 1
 		var tsize = if(options.contains("tsize")) options("tsize").toInt else -1
 		
 		if(opcode == 1)
-			send(socket)
+			rreq(socket,key)
 		else if(opcode == 2)
-			receive(socket)
+			wreq(socket,key)
 	}
 	def errorPacket(errorCode:Short,errorMsg:String): ByteBuffer = {
 		val buff = ByteBuffer.allocate(5+errorMsg.length)
@@ -157,5 +166,12 @@ object TftpServer {
 			buff.put(0.toByte)
 		}
 		buff
+	}
+	def keyXor(key:Long,buff:ByteBuffer):ByteBuffer = {
+		val out = ByteBuffer.allocate(buff.capacity)
+		for(i <- 0 until buff.capacity by 8) {
+			out.putLong(buff.getLong(i) ^ key)
+		}
+		out
 	}
 }

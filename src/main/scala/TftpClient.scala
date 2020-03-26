@@ -1,20 +1,25 @@
+import java.io.RandomAccessFile
 import java.net.{Inet4Address, InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
+import java.nio.channels.{DatagramChannel, FileChannel}
+import java.nio.file.{OpenOption, StandardOpenOption}
 import java.util
 
-import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
+import scala.collection.{LinearSeq, mutable}
 import scala.util.Random
 
 object TftpClient {
 	
 	def main(args: Array[String]): Unit = {
-		
 		val port = args(0).toInt
 		val serverAddress = args(1)
 		val serverPort = args(2).toInt
 		val v6 = if(args.contains("-v6")) true else false
 		val drop = if(args.contains("-drop")) true else false
+		val readWrite = if(args.contains("read")) 1 else if(args.contains("write")) 2 else -1
+		val filename= args(4)
+		var key:Long = null
 		
 		
 		val socket = DatagramChannel.open()
@@ -24,11 +29,12 @@ object TftpClient {
 		
 		socket.connect(new InetSocketAddress(serverAddress,serverPort))
 		if(socket.isConnected)
-			keyExchange(socket)
+			key = keyExchange(socket)
 		else
 			println("ERROR WITH CONNECTION")
 		
-		
+		//TODO send request
+		createConnection(socket,readWrite,filename,key)
 	}
 	def keyExchange(socket:DatagramChannel):Long = {
 		val buff = ByteBuffer.allocate(4)
@@ -54,46 +60,35 @@ object TftpClient {
 		val longKey = key1.toLong<<32 + buff.getInt
 		longKey
 	}
-	def createConnection(socket:DatagramChannel): Unit = {
-	
-	}
-	/*def acceptConnection(socket:DatagramChannel): Unit = {
-		val requestBuff = ByteBuffer.allocate(512)
-		var host:SocketAddress = null
-		
-		val sTime = System.currentTimeMillis
-		while(requestBuff.position < requestBuff.limit && System.currentTimeMillis - sTime <1000) {
-			if(host == null) {
-				host = socket.receive(requestBuff)
-				socket.connect(host)
-			}
-			else {
-				socket.read(requestBuff)
+	def createConnection(socket:DatagramChannel,readWrite:Int,filename:String,key:Long): Unit = {
+		val oack = ByteBuffer.allocate(10000)
+		val req = if(readWrite == 1) readReq(filename) else if(readWrite == 2) writeReq(filename) else throw new InvalidArguementException("Request must be read or write")
+		var sent = false
+		while(!sent) {
+			socket.write(keyXor(key,req))
+			val time = System.currentTimeMillis
+			var bytesRead = 0
+			var lastRead = 0
+			while((bytesRead ==0 ||  bytesRead > lastRead) && System.currentTimeMillis - time <500) {
+				lastRead = bytesRead
+				bytesRead += socket.read(oack)
 			}
 		}
 		
-		val opcode = requestBuff.getInt
-		val filename = getString(requestBuff)
+		if(readWrite == 1)
+			rreq(socket,filename,key)
+		else if(readWrite ==2)
+			wreq(socket,filename,key)
 		
-		val options = mutable.HashMap[String,String]()
-		while(requestBuff.position < requestBuff.limit) {
-			options.put(getString(requestBuff).toLowerCase,getString(requestBuff).toLowerCase)
-		}
-		
-		val blksize = if (options.contains("blksize") && options("blksize").toInt < 65536 && options("blksize").toInt >0) options("blksize").toInt else 512
-		val timeout = if (options.contains("timeout") && options("timeout").toInt<=255 && options("timeout").toInt>0) options("timeout").toInt else 1
-		var tsize = if(options.contains("tsize")) options("tsize").toInt else -1
-		
-		if(opcode == 1)
-			send(socket)
-		else if(opcode == 2)
-			receive(socket)
-	}*/
-	def send(socket:DatagramChannel): Unit = {
-	
 	}
-	def receive(socket:DatagramChannel): Unit = {
-	
+	def rreq(socket:DatagramChannel,filename:String,key:Long): Unit = {
+		val file = new RandomAccessFile(filename,"w").getChannel
+		
+	}
+	def wreq(socket:DatagramChannel,filename:String,key:Long): Unit = {
+		val maxWindowSize = 5
+		val window = ArrayBuffer
+		
 	}
 	def getString(buff:ByteBuffer):String = {
 		var str = ""
@@ -156,5 +151,12 @@ object TftpClient {
 			buff.put(0.toByte)
 		}
 		buff
+	}
+	def keyXor(key:Long,buff:ByteBuffer):ByteBuffer = {
+		val out = ByteBuffer.allocate(buff.capacity)
+		for(i <- 0 until buff.capacity by 8) {
+			out.putLong(buff.getLong(i) ^ key)
+		}
+		out
 	}
 }
