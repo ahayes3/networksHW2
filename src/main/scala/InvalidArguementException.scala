@@ -1,1 +1,1 @@
-class InvalidArguementException(message:String) extends Exception(message) {}
+class InvalidArguementException(message: String) extends Exception(message) {}
