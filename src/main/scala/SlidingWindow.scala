@@ -1,13 +1,22 @@
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 
-class SlidingWindow(length: Int) {
+import scala.collection.mutable
+
+class SlidingWindow(length: Int, socket: DatagramChannel) {
 	var arr = new Array[ByteBuffer](length)
+	var sentTime = new Array[Long](length)
+	var waitMult: Array[Int] = (for (i <- 0 until length) yield 1).toArray
 	var acked = new Array[Short](length)
 	var firstBlk: Short = 0
+	val stdWait = 500
 	
 	def apply(i: Int): ByteBuffer = {
 		arr(i - firstBlk)
+	}
+	
+	def getTime(blksize: Int): Long = {
+		sentTime(blksize - firstBlk)
 	}
 	
 	def position: Int = {
@@ -18,9 +27,11 @@ class SlidingWindow(length: Int) {
 	
 	def removeFirst: ByteBuffer = {
 		val a = arr.head
-		firstBlk += 1
+		firstBlk = (firstBlk + 1).toShort
 		arr = (arr.tail :+ null)
 		acked = acked.tail :+ 0
+		sentTime = sentTime.tail :+ 0
+		waitMult = waitMult.tail :+ 1
 		a
 	}
 	
@@ -47,62 +58,93 @@ class SlidingWindow(length: Int) {
 		arr(block - firstBlk) = buffer
 	}
 	
-	def take(list: IndexedSeq[ByteBuffer]): Int = {
-		var num = 0
-		var myList = list
-		while (!full) {
-			arr(position) = list.head
-			myList = myList.tail
-			num += 1
+	def take(list: mutable.ArrayBuffer[ByteBuffer]): Int = {
+		var ctr = 0
+		val last = arr.lastIndexWhere(p => p != null)
+		val pos = last + 1
+		for (i <- pos until length) {
+			arr(i) = TftpServer.dataPacket((firstBlk + i).toShort, list.remove(0))
+			ctr += 1
 		}
-		num
+		ctr
 	}
 	
 	def foreach(value: ByteBuffer => Unit): Unit = {
 		arr.foreach(value)
 	}
 	
-	def writeAll(socket: DatagramChannel): Unit = {
+	def writeAll: Unit = {
 		for (i <- acked.indices) {
-			if (acked(i) == 0)
-				socket.write(arr(i))
+			if (acked(i) == 0) {
+				socket.write(arr(i).flip)
+				sentTime(i) = System.currentTimeMillis
+			}
 		}
 	}
 	
-	def anyWritable:Boolean = {
-		for(i <- acked){
-			if(i==0)
+	def write(blknum: Int): Unit = {
+		socket.write(arr(blknum - firstBlk).flip)
+		sentTime(blknum - firstBlk) = System.currentTimeMillis
+	}
+	
+	def anyWritable: Boolean = {
+		for (i <- acked) {
+			if (i == 0)
 				return true
 		}
 		false
 	}
 	
-	def getWritable:IndexedSeq[ByteBuffer] = {
-		for(i <- acked.indices) yield {
-			if(acked(i)==0)
+	def getWritable: IndexedSeq[ByteBuffer] = {
+		for (i <- acked.indices) yield {
+			if (acked(i) == 0)
 				arr(i)
 		}.asInstanceOf
 	}
 	
-	def inWindow(num:Int):Boolean = {
-		if(num >=firstBlk && num <= firstBlk + arr.length)
+	def inWindow(num: Int): Boolean = {
+		if (num >= firstBlk && num <= firstBlk + arr.length)
 			true
 		else
-		 false
+			false
 	}
-	def slide:IndexedSeq[ByteBuffer] = {
+	
+	def slide: IndexedSeq[ByteBuffer] = {
 		var stop = false
 		var last = -1
-		for(i <- acked.indices) {
-			if(acked(i) == 2 && !stop) {
+		for (i <- acked.indices) {
+			if (acked(i) == 2 && !stop) {
 				last = i
 			}
-			else  if(acked(i) != 2)
+			else if (acked(i) != 2)
 				stop = true
 		}
-		if(last != -1) {
-			return for(i <- 0 until last+1) yield removeFirst
+		if (last != -1) {
+			return for (i <- 0 until last + 1) yield removeFirst
 		}
 		null
+	}
+	
+	def anyRetrans: Boolean = {
+		val time = System.currentTimeMillis
+		for (a <- sentTime.indices) {
+			if (time - sentTime(a) > stdWait * waitMult(a))
+				return true
+		}
+		return false
+	}
+	
+	def getRetrans: IndexedSeq[Int] = {
+		val time = System.currentTimeMillis
+		for (a <- sentTime.indices) yield {
+			if (time - sentTime(a) > stdWait * waitMult(a))
+				a
+		}.asInstanceOf
+	}
+	
+	def doRetransmit: Unit = {
+		val toRetrans = getRetrans
+		toRetrans.foreach(p => write(p + firstBlk))
+		toRetrans.foreach(p => waitMult(p) *= 2)
 	}
 }
