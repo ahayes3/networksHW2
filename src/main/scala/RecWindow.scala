@@ -1,8 +1,6 @@
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 
-import scala.collection.{+:, mutable}
-
 class RecWindow(length: Int, socket: DatagramChannel) {
 	var arr = new Array[ByteBuffer](length)
 	var firstBlk: Short = 0
@@ -36,9 +34,9 @@ class RecWindow(length: Int, socket: DatagramChannel) {
 	def contains(blknum: Int): Boolean = {
 		if (blknum < firstBlk)
 			false
-		else if (blknum > firstBlk + arr.length)
+		else if (blknum >= firstBlk + arr.length)
 			false
-		else if (arr(blknum) == null)
+		else if (arr(blknum - firstBlk) == null)
 			false
 		else
 			true
@@ -49,7 +47,8 @@ class RecWindow(length: Int, socket: DatagramChannel) {
 	}
 	
 	def empty: Boolean = {
-		arr.head == null
+		//arr.head == null
+		arr.forall(_ == null)
 	}
 	
 	def full: Boolean = {
@@ -71,16 +70,10 @@ class RecWindow(length: Int, socket: DatagramChannel) {
 			false
 	}
 	
-	def slide: Seq[ByteBuffer] = {
-		val out = Seq()
-		val iter = arr.iterator
-		while (iter.hasNext) {
-			val next = iter.next
-			if (next != null)
-				out :+ next
-			else
-				return out
-		}
+	def slide: IndexedSeq[ByteBuffer] = {
+		val firstNull = arr.indexOf(null)
+		val pos = if(firstNull == 0 || firstNull == -1) -1 else firstNull
+		val out = for(i <- 0 until pos) yield removeFirst
 		out
 	}
 }

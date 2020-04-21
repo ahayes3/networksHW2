@@ -1,18 +1,18 @@
-import java.io.RandomAccessFile
-import java.net.{DatagramPacket, InetAddress, Inet4Address, Inet6Address, InetSocketAddress, SocketAddress}
+import java.io.{File, RandomAccessFile}
+import java.net.{Inet6Address, InetAddress, InetSocketAddress}
 import java.nio.ByteBuffer
 import java.nio.channels.{DatagramChannel, FileChannel}
-import java.nio.file.{OpenOption, StandardOpenOption}
-import java.util
+import java.nio.file.{Path, StandardOpenOption}
 
+import TftpServer.keyXor
+
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-import scala.collection.{LinearSeq, mutable}
 import scala.util.Random
 
 object TftpClient {
 	
 	def main(args: Array[String]): Unit = {
-		
 		val port = args(0).toInt
 		val serverAddress = InetAddress.getByName(args(1))
 		val serverPort = args(2).toInt
@@ -36,17 +36,16 @@ object TftpClient {
 		val timeout = if (args.indexOf("timeout") != -1 && args(args.indexOf("timeout") + 1).toInt > 0 && args(args.indexOf("timeout") + 1).toInt <= 255) args(args.indexOf("timeout") + 1).toInt
 		else -1
 		val tsize = if (args.indexOf("tsize") != -1 && args(args.indexOf("tsize") + 1).toInt > 0) args(args.indexOf("tsize") + 1).toInt
-		else 1
+		else -1
 		
 		val options = mutable.HashMap[String, String]()
 		if (blksize != 512) options.put("blksize", blksize.toString)
-		if (timeout != 1) options.put("timeout", timeout.toString)
+		if (timeout != -1) options.put("timeout", timeout.toString)
 		if (tsize != -1) options.put("tsize", tsize.toString)
 		
 		val socket = DatagramChannel.open()
 		socket.bind(new InetSocketAddress(port))
 		socket.configureBlocking(false)
-		
 		
 		socket.connect(new InetSocketAddress(serverAddress, serverPort))
 		if (socket.isConnected)
@@ -54,8 +53,8 @@ object TftpClient {
 		else
 			println("ERROR WITH CONNECTION")
 		
-		//TODO send request
 		createConnection(socket, readWrite, filename, options, key.get, blksize, timeout, tsize, drop)
+		socket.close()
 	}
 	
 	def keyExchange(socket: DatagramChannel): Long = {
@@ -97,87 +96,163 @@ object TftpClient {
 	}
 	
 	def createConnection(socket: DatagramChannel, readWrite: Int, filename: String, options: mutable.HashMap[String, String], key: Long, blksize: Int, timeout: Long, tsize: Int, drop: Boolean): Unit = {
-		//TODO rewrite create connection and accept connection
+		////////TODO rewrite create connection and accept connection
 		val req: ByteBuffer = if (readWrite == 1) readReq(filename, options)
 		else if (readWrite == 2) writeReq(filename, options)
 		else throw new InvalidArguementException("Readwrite = " + readWrite)
-		val buff = ByteBuffer.allocate(req.capacity() - filename.length())
+		val buff = ByteBuffer.allocate(req.capacity() - filename.length() - 1)
 		
 		var reps = 0
 		do {
 			Thread.sleep(reps * 250)
-			socket.write(keyXor(key, req).flip)
+			val toWrite = keyXor(key, req)
+			socket.write(toWrite)
 			reps += 1
 		}
-		while (!recOack(socket, buff, options, key))
+		while (!recOack(socket, buff, options, key)) //todo might need to fix recOack
 		
+		println("here")
 		
-		//		val oack = ByteBuffer.allocate(1000)
-		//		val req = if (readWrite == 1) readReq(filename, options)
-		//		else if (readWrite == 2) writeReq(filename, options)
-		//		else throw new InvalidArguementException("Request must be read or write")
-		//
-		//		var sent = false
-		//		while (!sent) { //TODO make it check options and update sent
-		//			socket.write(keyXor(key, req))
-		//			val time = System.currentTimeMillis
-		//			var bytesRead = 0
-		//			var lastRead = 0
-		//			while ((bytesRead == 0 || bytesRead > lastRead) && System.currentTimeMillis - time < 500) {
-		//				lastRead = bytesRead
-		//				bytesRead += socket.read(oack)
-		//			}
-		//		}
-		//
-		//		if (readWrite == 1)
-		//			rreq(socket, blksize, timeout, tsize, filename, key)
-		//		else if (readWrite == 2)
-		//			wreq(socket, filename, key)
+		if (readWrite == 1)
+			rreq(socket, blksize, timeout, tsize, filename, key, drop)
+		else if (readWrite == 2)
+			wreq(socket, blksize, timeout, tsize, filename, key, drop)
 	}
 	
-	def rreq(socket: DatagramChannel, blksize: Int, timeout: Long, tsize: Int, filename: String, key: Long): Unit = { //todo test a lot
-		val file = new RandomAccessFile(filename, "w").getChannel
+	def rreq(socket: DatagramChannel, blksize: Int, timeout: Long, tsize: Int, filename: String, key: Long, drop: Boolean): Unit = { //todo test a lot
+		val file = new RandomAccessFile(filename, "rw").getChannel
+		val timelimit = if(timeout == -1) 500 else timeout*1000
 		val recWindow = new RecWindow(5, socket)
 		val buff = ByteBuffer.allocate(blksize + 4)
 		var done = false
+		var bytesWritten:Long = 0
 		while (!done) {
-			val bytesRead = socket.read(buff)
-			val packet = keyXor(key, buff)
-			val blknum = packet.getShort(2)
-			packet.position(4)
-			val data = packet.slice
-			
-			recWindow.ack(blknum, key)
-			if (!recWindow.contains(blknum))
-				recWindow.recieve(blknum, data)
-			
-			val toWrite = recWindow.slide
-			toWrite.foreach(file.write)
-			
-			if (recWindow.empty && data.capacity < blksize)
-				done = true
+			buff.clear()
+			val time = System.currentTimeMillis
+			while (buff.position() != buff.limit() && System.currentTimeMillis - time < timelimit) {
+				socket.read(buff)
+			}
+			if(drop && Random.nextInt(99)==0)
+				buff.clear()
+			if (buff.position() == buff.limit()) {
+				println("packet read")
+				val packet = keyXor(key, buff)
+				val opcode = packet.getShort(0) //todo handle error codes
+				if(opcode!= 3)
+					println("error")
+				val blknum = packet.getShort(2)
+				if(blknum < recWindow.firstBlk || blknum < recWindow.firstBlk+recWindow.arr.length-1)
+					recWindow.ack(blknum,key)
+				packet.position(4)
+				val data = packet.slice
+				//todo possibly check blknum and opcode to be valid
+				//recWindow.ack(blknum, key)
+				if (!recWindow.contains(blknum))
+					recWindow.recieve(blknum, data)
+				
+				val toWrite = recWindow.slide
+				toWrite.foreach(file.write)
+				
+				if (recWindow.empty && data.capacity < blksize)
+					done = true
+				
+			}
+			else if(buff.position()!=0) {
+				buff.flip()
+				val packet = keyXor(key,buff)
+				val opcode = packet.getShort(0)
+				if(opcode !=3) {
+					//todo handle error
+					println("error")
+				}
+				else {
+					val blknum = packet.getShort(2)
+					if(blknum < recWindow.firstBlk || blknum < recWindow.firstBlk+recWindow.arr.length-1)
+						recWindow.ack(blknum,key)
+					packet.position(4)
+					val data = packet.slice
+					if (!recWindow.contains(blknum))
+						recWindow.recieve(blknum, data)
+					
+					val toWrite = recWindow.slide
+					toWrite.foreach(bytesWritten += file.write(_))
+					
+					if ((tsize!= -1 && bytesWritten == tsize) || recWindow.empty && data.capacity < blksize)
+						done = true
+				}
+				println("here3")
+			}
+			else {
+				println("here4")
+			}
 		}
+		Thread.sleep(timelimit)
+		buff.clear()
+		socket.read(buff)
+		file.close()
+		
+		socket.disconnect()
+		println("here2")
 	}
 	
-	def wreq(socket: DatagramChannel, filename: String, key: Long): Unit = { //todo convert from server write
-		val maxWindowSize = 5
-		val window = ArrayBuffer
+	def wreq(socket: DatagramChannel, blksize: Int, timeout: Long, tsize: Int, filename: String, key: Long, drop: Boolean): Unit = { //todo convert from server write
+		val window = new SlidingWindow(5, socket)
+		val ackBuff = ByteBuffer.allocate(4)
+		val file = new RandomAccessFile(filename, "r").getChannel
+		var data = ArrayBuffer.from(for (i <- 0.toLong to file.size() by blksize) yield {
+			val buff = ByteBuffer.allocate(blksize)
+			file.read(buff)
+			buff
+		})
+		if(data.last.capacity() == data.head.capacity()) {
+			data = data :+ ByteBuffer.allocate(0)
+		}
+		println("Total packets: "+ data.length)
+		var position = 0
+		position += window.take(data)
 		
+		while (!window.empty || data.nonEmpty) {
+			if(data.nonEmpty)
+				window.take(data)
+			ackBuff.clear()
+			if (window.anyWritable)
+				window.getWritable.foreach(p => window.write(p,key))
+			if (window.anyRetrans)
+				window.doRetransmit(key)
+			socket.read(ackBuff)
+			if(ackBuff.position()==ackBuff.limit()) {
+				val ack = keyXor(key, ackBuff)
+				val opcode = ack.getShort(0)
+				if(opcode == 5) {
+					//todo Handle error
+				}
+				else {
+					val ackNum = ack.getShort(2)
+					println(ackNum + " acked")
+					window.ack(ackNum)
+					window.slide
+				}
+			}
+		}
+		println("here2")
 	}
 	
 	def recOack(socket: DatagramChannel, buff: ByteBuffer, options: mutable.HashMap[String, String], key: Long): Boolean = {
-		val time = System.currentTimeMillis
+		buff.clear()
+		
 		val keyset = options.keySet
 		val valset = options.valuesIterator.toArray.toSet
+		val time = System.currentTimeMillis
 		while (buff.position() < buff.capacity() && System.currentTimeMillis() - time < 500) {
 			socket.read(buff)
 		}
-		buff.flip()
 		val packet = keyXor(key, buff)
-		val opcode = buff.getShort()
+		val opcode = packet.getShort()
+		if(opcode != 6)
+			return false
 		var opts = new Array[String](0)
 		var vals = new Array[String](0)
-		while (buff.position() < buff.limit()) {
+		while (packet.position() < packet.limit()) {
 			opts = opts :+ getString(buff)
 			vals = vals :+ getString(buff)
 		}
@@ -242,7 +317,7 @@ object TftpClient {
 	}
 	
 	def readReq(filename: String, options: mutable.HashMap[String, String]): ByteBuffer = {
-		val buff = ByteBuffer.allocate(4 + filename.length)
+		val buff = ByteBuffer.allocate(3 + options.size * 2 + filename.length)
 		buff.putShort(1.toShort)
 		buff.put(filename.getBytes)
 		buff.put(0.toByte)
@@ -258,8 +333,8 @@ object TftpClient {
 	}
 	
 	def writeReq(filename: String, options: mutable.HashMap[String, String]): ByteBuffer = {
-		val buff = ByteBuffer.allocate(4 + filename.length)
-		buff.putShort(1.toShort)
+		val buff = ByteBuffer.allocate(3 + options.size * 2 + filename.length)
+		buff.putShort(2.toShort)
 		buff.put(filename.getBytes)
 		buff.put(0.toByte)
 		
@@ -291,10 +366,11 @@ object TftpClient {
 	}
 	
 	def keyXor(key: Long, buff: ByteBuffer): ByteBuffer = {
-		val out = ByteBuffer.allocate(buff.capacity)
-		for (i <- 0 until buff.capacity by 8) {
-			out.putLong(buff.getLong(i) ^ key)
-		}
+		val keyArr = BigInt(key).toByteArray
+		val buffArr = buff.array.take(buff.limit())
+		val out = ByteBuffer.wrap((for (i <- buffArr.indices) yield {
+			(keyArr(i % keyArr.length) ^ buffArr(i)).toByte
+		}).toArray)
 		out
 	}
 }

@@ -1,4 +1,0 @@
-object State extends Enumeration {
-	type State = Value
-	val IDLE, KEYEXCHANGE, ESTABLISHING_CONNECTION,SENDING,RECEIVING,WAITING_OACK,RESEND_REQ = Value
-}
